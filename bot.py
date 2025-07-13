@@ -1,12 +1,14 @@
-# bot.py (Versão com importação corrigida)
+# bot.py (Versão com servidor Flask para webhooks do Notion)
 
 import discord
 from discord import app_commands, Interaction, SelectOption, Color
 from discord.ext import commands
-from discord.ui import Select, View # <-- CORREÇÃO: Importação do local correto
+from discord.ui import Select, View
 import os
 from dotenv import load_dotenv
 from typing import Optional
+import threading
+from flask import Flask, request, jsonify
 
 # Módulos locais
 from notion_integration import NotionIntegration, NotionAPIError
@@ -23,6 +25,7 @@ from ui_components import (
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -32,6 +35,26 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 notion = NotionIntegration()
 
+# --- CONFIGURAÇÃO DO SERVIDOR FLASK ---
+app = Flask(__name__)
+
+@app.route('/webhook/notion', methods=['POST'])
+def notion_webhook_handler():
+    # 1. Validação de Segurança
+    secret_from_url = request.args.get('secret')
+    if not secret_from_url or secret_from_url != WEBHOOK_SECRET:
+        print("ALERTA: Tentativa de acesso ao webhook sem o segredo correto.")
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+
+    # 2. Receber os dados
+    data = request.json
+    print(f"Webhook do Notion recebido para a página: {data.get('properties', {}).get('Name', {}).get('title', [{}])[0].get('text', {}).get('content')}")
+    
+    # 3. Enviar os dados para o bot do Discord de forma segura
+    # Usamos 'call_soon_threadsafe' porque o Flask corre numa thread diferente
+    bot.loop.call_soon_threadsafe(bot.dispatch, 'notion_event', data)
+    
+    return jsonify({"status": "success"}), 200
 
 # --- FUNÇÃO AUXILIAR DE CONFIGURAÇÃO ---
 
@@ -101,17 +124,55 @@ async def run_full_config_flow(interaction: Interaction, url: str, is_update: bo
 # --- EVENTOS DO BOT ---
 
 @bot.event
-async def on_ready():
-    """Evento disparado quando o bot está pronto."""
-    if DISCORD_GUILD_ID:
-        guild = discord.Object(id=DISCORD_GUILD_ID)
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-        print(f"Comandos sincronizados para o servidor {DISCORD_GUILD_ID}.")
-    else:
-        await bot.tree.sync()
-        print("Comandos sincronizados globalmente.")
-    print(f"✅ {bot.user} está online e pronto para uso!")
+async def on_notion_event(page_data: dict):
+    """
+    Este evento customizado é disparado pelo nosso handler do Flask quando um webhook chega.
+    """
+    try:
+        page_id = page_data.get('id')
+        if not page_id:
+            return
+
+        # Vamos procurar uma configuração global de canal para enviar a notificação.
+        # Isto é uma simplificação. O ideal seria ter esta config por servidor/canal.
+        # NOTA: Esta parte assume que a notificação deve ir para um canal específico.
+        #       Para enviar a um tópico ou DM, a lógica precisaria ser mais complexa.
+        
+        # Obter o canal para o qual enviar a notificação.
+        # Por simplicidade, vamos usar o primeiro canal configurado que encontrarmos.
+        # Idealmente, você adicionaria uma config específica para "canal_de_notificacoes".
+        
+        server_id = next(iter(load_config(None, None).keys()), None)
+        if not server_id: return
+        
+        configs = load_config(server_id, None)
+        channel_id = next(iter(configs.get('channels', {}).keys()), None)
+        if not channel_id: return
+        
+        target_channel = bot.get_channel(int(channel_id))
+        channel_config = load_config(server_id, channel_id)
+
+        if target_channel and channel_config:
+            display_props = channel_config.get('display_properties', [])
+            
+            # Criar um "page_result" simulado para a função de embed
+            page_result = {
+                'id': page_id,
+                'url': page_data.get('url'),
+                'properties': page_data.get('properties', {})
+            }
+            
+            embed = notion.format_page_for_embed(page_result, display_properties=display_props)
+            if embed:
+                embed.title = f"🔔 Atualização do Notion: {embed.title.replace('📌 ', '')}"
+                embed.color = Color.orange()
+                await target_channel.send(embed=embed)
+        else:
+            print(f"Não foi possível encontrar um canal de destino para a notificação da página {page_id}")
+
+    except Exception as e:
+        print(f"Erro ao processar o evento do Notion: {e}")
+
 
 
 # --- COMANDOS DE BARRA (/) ---
@@ -296,8 +357,21 @@ async def num_cards(interaction: Interaction):
         print(f"Erro inesperado no /num_cards: {e}")
 
 
+# --- FUNÇÃO PARA INICIAR O SERVIDOR FLASK ---
+def run_flask():
+    # O Render define a variável de ambiente 'PORT'. Usamos 8080 como padrão se não for encontrada.
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+
 # --- INICIAR O BOT ---
 if __name__ == "__main__":
+    # 1. Inicia o servidor Flask numa thread separada
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # 2. Inicia o bot do Discord
     if DISCORD_TOKEN:
         try:
             bot.run(DISCORD_TOKEN)
