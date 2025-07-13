@@ -533,7 +533,7 @@ class CardSelectPropertiesView(View):
 class CardModal(discord.ui.Modal):
     def __init__(self, notion: NotionIntegration, config: dict, all_properties: list, text_props: list, select_props: list, thread_context: Optional[discord.Thread], topic_title: Optional[str]):
         super().__init__(title="Criar Novo Card (Etapa 1)")
-        self.notion = notion # A instância de NotionIntegration está disponível aqui.
+        self.notion = notion
         self.config, self.all_properties, self.text_props, self.select_props = config, all_properties, text_props, select_props
         self.thread_context = thread_context
         self.text_inputs = {}
@@ -547,57 +547,65 @@ class CardModal(discord.ui.Modal):
             self.add_item(text_input)
 
     async def on_submit(self, interaction: Interaction):
-        await interaction.response.defer(thinking=True, ephemeral=True)
-        collected_from_modal = {name: item.value for name, item in self.text_inputs.items() if item.value}
+        # CORREÇÃO: Envolvemos tudo num bloco try...except
+        try:
+            await interaction.response.defer(thinking=True, ephemeral=True)
+            collected_from_modal = {name: item.value for name, item in self.text_inputs.items() if item.value}
 
-        if not self.select_props:
-            try:
-                title_prop_name = next((p['name'] for p in self.all_properties if p['type'] == 'title'), None)
-                if not title_prop_name: raise NotionAPIError("Propriedade de Título não encontrada.")
-                title_value = collected_from_modal.pop(title_prop_name, f"Card criado em {datetime.now().strftime('%d/%m')}")
+            if not self.select_props:
+                # Este bloco já tinha um 'try...except' interno, o que é bom.
+                try:
+                    title_prop_name = next((p['name'] for p in self.all_properties if p['type'] == 'title'), None)
+                    if not title_prop_name: raise NotionAPIError("Propriedade de Título não encontrada.")
+                    title_value = collected_from_modal.pop(title_prop_name, f"Card criado em {datetime.now().strftime('%d/%m')}")
 
-                individual_prop = self.config.get('individual_person_prop')
-                if individual_prop:
-                    collected_from_modal[individual_prop] = interaction.user.display_name
+                    individual_prop = self.config.get('individual_person_prop')
+                    if individual_prop:
+                        collected_from_modal[individual_prop] = interaction.user.display_name
 
-                collective_prop = self.config.get('collective_person_prop')
-                if collective_prop and self.thread_context:
-                    participants = await get_topic_participants(self.thread_context)
-                    notion_user_ids = [self.notion.search_id_person(member.display_name) for member in participants]
-                    collected_from_modal[collective_prop] = [uid for uid in notion_user_ids if uid]
+                    collective_prop = self.config.get('collective_person_prop')
+                    if collective_prop and self.thread_context:
+                        participants = await get_topic_participants(self.thread_context)
+                        notion_user_ids = [self.notion.search_id_person(member.display_name) for member in participants]
+                        collected_from_modal[collective_prop] = [uid for uid in notion_user_ids if uid]
 
-                topic_prop_name = self.config.get('topic_link_property_name')
-                if topic_prop_name and self.thread_context:
-                    collected_from_modal[topic_prop_name] = self.thread_context.jump_url
+                    topic_prop_name = self.config.get('topic_link_property_name')
+                    if topic_prop_name and self.thread_context:
+                        collected_from_modal[topic_prop_name] = self.thread_context.jump_url
 
-                # CORREÇÃO APLICADA AQUI: Passando self.notion como argumento
-                page_content = await _build_notion_page_content(self.config, self.thread_context, self.notion) #
+                    page_content = await _build_notion_page_content(self.config, self.thread_context, self.notion)
 
-                # Modifica a chamada para a criação da página
-                page_properties = self.notion.build_page_properties(self.config['notion_url'], title_value, collected_from_modal)
-                response = self.notion.insert_into_database(
-                    self.config['notion_url'],
-                    page_properties,
-                    children=page_content
-                )
+                    page_properties = self.notion.build_page_properties(self.config['notion_url'], title_value, collected_from_modal)
+                    response = self.notion.insert_into_database(
+                        self.config['notion_url'],
+                        page_properties,
+                        children=page_content
+                    )
 
-                display_names = self.config.get('display_properties', [])
-                final_embed = self.notion.format_page_for_embed(response, display_properties=display_names)
+                    display_names = self.config.get('display_properties', [])
+                    final_embed = self.notion.format_page_for_embed(response, display_properties=display_names)
 
-                if final_embed:
-                    final_embed.title = f"✅ Card '{final_embed.title.replace('📌 ', '')}' Criado!"
-                    final_embed.color = Color.purple()
-                    page_id = response['id']
-                    publish_view = PublishView(interaction.user.id, final_embed, page_id, self.config, self.notion)
-                    await interaction.followup.send("Card criado! Use o botão abaixo para exibi-lo para todos.", embed=final_embed, view=publish_view, ephemeral=True)
-                else:
-                    await interaction.followup.send("✅ Card criado, mas não foi possível gerar a visualização.", ephemeral=True)
-            except Exception as e:
-                await interaction.followup.send(f"🔴 Erro ao criar o card: {e}", ephemeral=True)
-        else:
-            await interaction.edit_original_response(content="📝 Etapa 1/2 concluída. Agora, selecione os valores abaixo.", view=None)
-            view = CardSelectPropertiesView(interaction.user.id, self.config, self.all_properties, self.select_props, collected_from_modal, self.thread_context, self.notion)
-            await interaction.followup.send(view=view, ephemeral=True)
+                    if final_embed:
+                        final_embed.title = f"✅ Card '{final_embed.title.replace('📌 ', '')}' Criado!"
+                        final_embed.color = Color.purple()
+                        page_id = response['id']
+                        publish_view = PublishView(interaction.user.id, final_embed, page_id, self.config, self.notion)
+                        await interaction.followup.send("Card criado! Use o botão abaixo para exibi-lo para todos.", embed=final_embed, view=publish_view, ephemeral=True)
+                    else:
+                        await interaction.followup.send("✅ Card criado, mas não foi possível gerar a visualização.", ephemeral=True)
+                except Exception as e:
+                    await interaction.followup.send(f"🔴 Erro ao criar o card: {e}", ephemeral=True)
+            else:
+                await interaction.edit_original_response(content="📝 Etapa 1/2 concluída. Agora, selecione os valores abaixo.", view=None)
+                view = CardSelectPropertiesView(interaction.user.id, self.config, self.all_properties, self.select_props, collected_from_modal, self.thread_context, self.notion)
+                await interaction.followup.send(view=view, ephemeral=True)
+
+        except Exception as e:
+            # Este 'except' apanha qualquer erro que aconteça na função, incluindo depois do 'defer'.
+            print(f"Erro fatal no on_submit do CardModal: {e}")
+            if interaction.response.is_done():
+                # Se já acusamos a receção, usamos followup para enviar o erro.
+                await interaction.followup.send("🔴 Ocorreu um erro inesperado ao processar o formulário. Por favor, tente novamente.", ephemeral=True)
 
 
 class ContinueEditingView(View):
