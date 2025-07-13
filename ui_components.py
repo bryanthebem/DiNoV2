@@ -654,7 +654,7 @@ class TopicLinkView(View):
         self.add_item(prop_select)
 
 
-class ManagementView(View):
+class ManagementView(View): # SUBSTITUA A SUA CLASSE EXISTENTE POR ESTA
     def __init__(self, parent_interaction: Interaction, notion: NotionIntegration, config: dict):
         super().__init__(timeout=180.0)
         self.parent_interaction = parent_interaction
@@ -662,6 +662,22 @@ class ManagementView(View):
         self.channel_id = parent_interaction.channel.parent_id if isinstance(parent_interaction.channel, discord.Thread) else parent_interaction.channel.id
         self.notion = notion
         self.config = config
+
+    @discord.ui.button(label="Reconfigurar Propriedades", style=ButtonStyle.primary, emoji="🔄", row=0)
+    async def reconfigure(self, interaction: Interaction, button: Button):
+        await interaction.response.send_message("Para reconfigurar as propriedades de criação/exibição, use `/config` novamente com a URL do Notion.", ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="Gerenciar Notificações", style=ButtonStyle.primary, emoji="🔔", row=0)
+    async def manage_notifications(self, interaction: Interaction, button: Button):
+        # Encontra a configuração do canal atual para passar para a view
+        channel_config = load_config(self.guild_id, self.channel_id)
+        if not channel_config:
+             return await interaction.response.send_message("Erro ao carregar a configuração deste canal.", ephemeral=True)
+
+        view = NotificationSettingsView(interaction, self.notion, channel_config)
+        await interaction.response.send_message("Configure como as notificações de automações do Notion devem ser enviadas:", view=view, ephemeral=True)
+        self.stop()
 
     @discord.ui.button(label="Reconfigurar URL", style=ButtonStyle.primary, emoji="🔄", row=0)
     async def reconfigure(self, interaction: Interaction, button: Button):
@@ -751,3 +767,64 @@ class ManagementView(View):
         view = PersonSelectView(self.guild_id, self.channel_id, people_props, 'collective_person_prop')
         await interaction.response.send_message(description, view=view, ephemeral=True)
         self.stop()
+
+
+class NotificationSettingsView(View):
+    """Nova View para gerenciar as configurações de notificação."""
+    def __init__(self, parent_interaction: Interaction, notion: NotionIntegration, config: dict):
+        super().__init__(timeout=180.0)
+        self.parent_interaction = parent_interaction
+        self.guild_id = parent_interaction.guild_id
+        self.channel_id = parent_interaction.channel.id # O canal onde o /config foi usado
+        self.notion = notion
+        self.config = config
+
+        # Adiciona um select para escolher o tipo de notificação
+        select = Select(
+            placeholder="Escolha o comportamento padrão das notificações...",
+            options=[
+                SelectOption(label="Notificar no Tópico do Card", value="topic", description="Envia a notificação para o tópico original do card."),
+                SelectOption(label="Notificar neste Canal", value="channel", description=f"Envia a notificação para o canal #{parent_interaction.channel.name}."),
+                SelectOption(label="Notificar Responsável por DM", value="dm", description="Envia uma mensagem direta para o responsável do card."),
+                SelectOption(label="Desativar Notificações", value="disabled", description="Não envia nenhuma notificação via webhook.")
+            ]
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: Interaction):
+        choice = interaction.data['values'][0]
+        
+        # Salva a preferência principal
+        save_config(self.guild_id, self.channel_id, {'notification_preference': choice})
+        
+        if choice == "channel":
+            save_config(self.guild_id, self.channel_id, {'notification_target_id': self.channel_id})
+            await interaction.response.send_message(f"✅ Preferência salva! As notificações serão enviadas para `#{self.parent_interaction.channel.name}`.", ephemeral=True)
+            self.stop()
+
+        elif choice in ["topic", "dm"]:
+            prop_type = 'url' if choice == 'topic' else 'people'
+            config_key = 'topic_link_property_name' if choice == 'topic' else 'dm_notification_prop'
+            
+            all_props = self.notion.get_properties_for_interaction(self.config['notion_url'])
+            compatible_props = [p for p in all_props if p['type'] == prop_type]
+            
+            if not compatible_props:
+                await interaction.response.send_message(f"❌ Nenhuma propriedade compatível ('{prop_type}') encontrada para configurar esta opção.", ephemeral=True)
+                return
+
+            description = f"Agora, selecione a propriedade que armazena o {'link do tópico' if choice == 'topic' else 'responsável pela DM'}."
+            
+            # Reutiliza as Views de seleção que já existem
+            if choice == 'topic':
+                view = TopicLinkView(self.guild_id, self.channel_id, compatible_props)
+            else: # dm
+                view = PersonSelectView(self.guild_id, self.channel_id, compatible_props, config_key)
+            
+            await interaction.response.send_message(description, view=view, ephemeral=True)
+            self.stop()
+
+        else: # disabled
+            await interaction.response.send_message("✅ Notificações via webhook foram desativadas.", ephemeral=True)
+            self.stop()
