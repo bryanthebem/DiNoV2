@@ -86,51 +86,51 @@ class NotionIntegration:
             })
         return rich_text_objects
     
-def _parse_summary_to_notion_blocks(self, summary_text: str) -> List[Dict]:
-    """
-    Parses o texto do resumo da IA (que pode conter Markdown) em blocos do Notion.
-    Trata títulos em negrito, itens de lista e parágrafos.
-    """
-    notion_blocks = []
-    lines = summary_text.strip().split('\n')
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
+    def _parse_summary_to_notion_blocks(self, summary_text: str) -> List[Dict]:
+        """
+        Parses o texto do resumo da IA (que pode conter Markdown) em blocos do Notion.
+        Trata títulos em negrito, itens de lista e parágrafos.
+        """
+        notion_blocks = []
+        lines = summary_text.strip().split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
 
-        # CORREÇÃO: Trata cabeçalhos em negrito (ex: **Título:**)
-        bold_heading_match = re.match(r'^\*\*(.*?):\*\*$', line.strip())
-        if bold_heading_match:
-            heading_text = bold_heading_match.group(1) + ":"
-            # Usa um bloco de cabeçalho para semântica e robustez
-            notion_blocks.append({
-                "object": "block",
-                "type": "heading_3", # Usar um heading é mais apropriado
-                "heading_3": {
-                    "rich_text": [{"type": "text", "text": {"content": heading_text}}]
-                }
-            })
-        # Trata itens de lista
-        elif line.startswith('* ') or line.startswith('- '):
-            content_text = line[2:]
-            notion_blocks.append({
-                "object": "block",
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {
-                    "rich_text": self._convert_text_to_notion_rich_text_objects(content_text)
-                }
-            })
-        # Trata parágrafos normais
-        else:
-            notion_blocks.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": self._convert_text_to_notion_rich_text_objects(line)
-                }
-            })
-    return notion_blocks
+            # CORREÇÃO APLICADA: Trata cabeçalhos em negrito (ex: **Título:**)
+            bold_heading_match = re.match(r'^\*\*(.*?):\*\*$', line.strip())
+            if bold_heading_match:
+                heading_text = bold_heading_match.group(1) + ":"
+                # Usa um bloco de cabeçalho para semântica e robustez
+                notion_blocks.append({
+                    "object": "block",
+                    "type": "heading_3", # Usar um heading é mais apropriado
+                    "heading_3": {
+                        "rich_text": [{"type": "text", "text": {"content": heading_text}}]
+                    }
+                })
+            # Trata itens de lista
+            elif line.startswith('* ') or line.startswith('- '):
+                content_text = line[2:]
+                notion_blocks.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {
+                        "rich_text": self._convert_text_to_notion_rich_text_objects(content_text)
+                    }
+                })
+            # Trata parágrafos normais
+            else:
+                notion_blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": self._convert_text_to_notion_rich_text_objects(line)
+                    }
+                })
+        return notion_blocks
 
     def extract_database_id(self, url):
         match = re.search(r"([a-f0-9]{32})", url)
