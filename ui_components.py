@@ -9,7 +9,7 @@ from datetime import datetime
 
 # Módulos locais
 from notion_integration import NotionIntegration, NotionAPIError
-from config_utils import save_config
+from config_utils import save_config, load_config
 from ia_processor import summarize_thread_content
 
 # --- FUNÇÕES AUXILIARES DE UI ---
