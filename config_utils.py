@@ -1,4 +1,4 @@
-# config_utils.py
+# config_utils.py (Versão atualizada)
 
 import json
 from typing import Optional, Dict, Any
@@ -28,11 +28,24 @@ def save_config(server_id: str, channel_id: str, new_channel_config: Dict[str, A
     with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as f:
         json.dump(configs, f, indent=4)
 
-def load_config(server_id: str, channel_id: str) -> Optional[Dict[str, Any]]:
-    """Carrega a configuração de um canal específico do arquivo JSON."""
+def load_config(server_id: str, channel_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Carrega a configuração do arquivo JSON.
+    - Se channel_id for fornecido, retorna a config desse canal.
+    - Se channel_id for None, retorna a config de todo o servidor.
+    """
     try:
         with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
             configs = json.load(f)
-        return configs.get(str(server_id), {}).get("channels", {}).get(str(channel_id))
+        
+        server_config = configs.get(str(server_id))
+        if not server_config:
+            return None
+            
+        if channel_id:
+            return server_config.get("channels", {}).get(str(channel_id))
+        else:
+            return server_config # Retorna a configuração completa do servidor
+
     except FileNotFoundError:
         return None
