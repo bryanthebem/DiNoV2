@@ -445,7 +445,7 @@ class CardSelectPropertiesView(View):
         self.select_props = select_props
         self.collected_properties = collected_from_modal.copy()
         self.thread_context = thread_context
-        self.notion = notion # A instância de NotionIntegration está disponível aqui.
+        self.notion = notion
 
         for prop in self.select_props:
             prop_name, prop_type = prop['name'], prop['type']
@@ -472,62 +472,70 @@ class CardSelectPropertiesView(View):
 
     @discord.ui.button(label="✅ Criar Card", style=ButtonStyle.green, row=4)
     async def confirm_button(self, interaction: Interaction, button: Button):
-        for item in self.children: item.disabled = True
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # CORREÇÃO: Envolvemos tudo num bloco try...except
         try:
-            title_prop_name = next((p['name'] for p in self.all_properties if p['type'] == 'title'), None)
-            if not title_prop_name: raise NotionAPIError("Nenhuma propriedade de Título foi encontrada.")
+            for item in self.children: item.disabled = True
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            
+            # O 'try...except' interno foi mantido para mensagens de erro específicas
+            try:
+                title_prop_name = next((p['name'] for p in self.all_properties if p['type'] == 'title'), None)
+                if not title_prop_name: raise NotionAPIError("Nenhuma propriedade de Título foi encontrada.")
 
-            title_value = self.collected_properties.pop(title_prop_name, f"Card criado em {datetime.now().strftime('%d/%m')}")
+                title_value = self.collected_properties.pop(title_prop_name, f"Card criado em {datetime.now().strftime('%d/%m')}")
 
-            individual_prop = self.config.get('individual_person_prop')
-            if individual_prop:
-                self.collected_properties[individual_prop] = interaction.user.display_name
+                individual_prop = self.config.get('individual_person_prop')
+                if individual_prop:
+                    self.collected_properties[individual_prop] = interaction.user.display_name
 
-            collective_prop = self.config.get('collective_person_prop')
-            if collective_prop and self.thread_context:
-                participants = await get_topic_participants(self.thread_context)
-                notion_user_ids = [self.notion.search_id_person(member.display_name) for member in participants]
-                self.collected_properties[collective_prop] = [uid for uid in notion_user_ids if uid]
+                collective_prop = self.config.get('collective_person_prop')
+                if collective_prop and self.thread_context:
+                    participants = await get_topic_participants(self.thread_context)
+                    notion_user_ids = [self.notion.search_id_person(member.display_name) for member in participants]
+                    self.collected_properties[collective_prop] = [uid for uid in notion_user_ids if uid]
 
-            topic_prop_name = self.config.get('topic_link_property_name')
-            if topic_prop_name and self.thread_context:
-                self.collected_properties[topic_prop_name] = self.thread_context.jump_url
+                topic_prop_name = self.config.get('topic_link_property_name')
+                if topic_prop_name and self.thread_context:
+                    self.collected_properties[topic_prop_name] = self.thread_context.jump_url
 
-            # CORREÇÃO APLICADA AQUI: Passando self.notion como argumento
-            page_content = await _build_notion_page_content(self.config, self.thread_context, self.notion) #
+                page_content = await _build_notion_page_content(self.config, self.thread_context, self.notion)
 
-            # Modifica a chamada para a criação da página
-            page_properties = self.notion.build_page_properties(self.config['notion_url'], title_value, self.collected_properties)
-            response = self.notion.insert_into_database(
-                self.config['notion_url'],
-                page_properties,
-                children=page_content
-            )
+                page_properties = self.notion.build_page_properties(self.config['notion_url'], title_value, self.collected_properties)
+                response = self.notion.insert_into_database(
+                    self.config['notion_url'],
+                    page_properties,
+                    children=page_content
+                )
 
-            await interaction.edit_original_response(content="✅ Card criado com sucesso! Veja abaixo.", view=None)
+                await interaction.edit_original_response(content="✅ Card criado com sucesso! Veja abaixo.", view=None)
 
-            display_properties_names = self.config.get('display_properties', [])
-            success_embed = self.notion.format_page_for_embed(response, display_properties=display_properties_names)
+                display_properties_names = self.config.get('display_properties', [])
+                success_embed = self.notion.format_page_for_embed(response, display_properties=display_properties_names)
 
-            if not success_embed:
-                await interaction.followup.send("❌ Não foi possível formatar o embed do card criado.", ephemeral=True)
-                return
+                if not success_embed:
+                    await interaction.followup.send("❌ Não foi possível formatar o embed do card criado.", ephemeral=True)
+                    return
 
-            success_embed.title = f"✅ Card '{success_embed.title.replace('📌 ', '')}' Criado!"
-            success_embed.color = Color.purple()
+                success_embed.title = f"✅ Card '{success_embed.title.replace('📌 ', '')}' Criado!"
+                success_embed.color = Color.purple()
 
-            page_id = response['id']
-            publish_view = PublishView(interaction.user.id, success_embed, page_id, self.config, self.notion)
-            await interaction.followup.send(
-                "Use o botão abaixo para exibir seu card para todos no canal.",
-                embed=success_embed, view=publish_view, ephemeral=True
-            )
+                page_id = response['id']
+                publish_view = PublishView(interaction.user.id, success_embed, page_id, self.config, self.notion)
+                await interaction.followup.send(
+                    "Use o botão abaixo para exibir seu card para todos no canal.",
+                    embed=success_embed, view=publish_view, ephemeral=True
+                )
 
-        except NotionAPIError as e: await interaction.followup.send(f"❌ **Erro no Notion:**\n`{e}`", ephemeral=True)
+            except NotionAPIError as e: await interaction.followup.send(f"❌ **Erro no Notion:**\n`{e}`", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"🔴 **Erro inesperado:**\n`{e}`", ephemeral=True)
+                print(f"Erro inesperado no confirm_button: {e}")
+
         except Exception as e:
-            await interaction.followup.send(f"🔴 **Erro inesperado:**\n`{e}`", ephemeral=True)
-            print(f"Erro inesperado no confirm_button: {e}")
+            # Este 'except' geral garante que qualquer erro será tratado.
+            print(f"Erro fatal no confirm_button: {e}")
+            if interaction.response.is_done():
+                await interaction.followup.send("🔴 Ocorreu um erro inesperado ao confirmar a criação. Por favor, tente novamente.", ephemeral=True)
 
 
 class CardModal(discord.ui.Modal):
