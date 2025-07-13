@@ -1,4 +1,5 @@
-# bot.py (Versão com servidor Flask para webhooks do Notion)
+# bot.py (Versão final com servidor Flask e roteamento inteligente)
+# bot.py (Versão final com servidor Flask e roteamento inteligente)
 
 import discord
 from discord import app_commands, Interaction, SelectOption, Color
@@ -13,24 +14,20 @@ from flask import Flask, request, jsonify
 # Módulos locais
 from notion_integration import NotionIntegration, NotionAPIError
 from config_utils import save_config, load_config
-from ui_components import (
-    SelectView,
-    PaginationView,
-    SearchModal,
-    CardModal,
-    ManagementView,
-)
+from ui_components import * # Importa tudo de ui_components
 
-# Carregar variáveis de ambiente e inicializar bot/notion
+# Carregar variáveis de ambiente e inicializar
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
+# --- CONFIGURAÇÃO DO BOT E NOTION ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.messages = True
+intents.members = True # Necessário para encontrar membros por nome
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 notion = NotionIntegration()
@@ -40,135 +37,89 @@ app = Flask(__name__)
 
 @app.route('/webhook/notion', methods=['POST'])
 def notion_webhook_handler():
-    # 1. Validação de Segurança
     secret_from_url = request.args.get('secret')
-    if not secret_from_url or secret_from_url != WEBHOOK_SECRET:
+    if not WEBHOOK_SECRET or not secret_from_url or secret_from_url != WEBHOOK_SECRET:
         print("ALERTA: Tentativa de acesso ao webhook sem o segredo correto.")
         return jsonify({"status": "error", "message": "Unauthorized"}), 403
 
-    # 2. Receber os dados
     data = request.json
-    print(f"Webhook do Notion recebido para a página: {data.get('properties', {}).get('Name', {}).get('title', [{}])[0].get('text', {}).get('content')}")
-    
-    # 3. Enviar os dados para o bot do Discord de forma segura
-    # Usamos 'call_soon_threadsafe' porque o Flask corre numa thread diferente
     bot.loop.call_soon_threadsafe(bot.dispatch, 'notion_event', data)
-    
     return jsonify({"status": "success"}), 200
-
-# --- FUNÇÃO AUXILIAR DE CONFIGURAÇÃO ---
-
-async def run_full_config_flow(interaction: Interaction, url: str, is_update: bool = False):
-    """Executa o fluxo completo de configuração de um canal."""
-    config_channel = interaction.channel
-    if isinstance(interaction.channel, discord.Thread):
-        config_channel = interaction.channel.parent
-    config_channel_id = config_channel.id
-
-    try:
-        # Salva a URL inicial para garantir que o canal é reconhecido como configurado
-        save_config(interaction.guild_id, config_channel_id, {'notion_url': url})
-
-        all_properties = notion.get_properties_for_interaction(url)
-        property_names = [prop['name'] for prop in all_properties]
-
-        async def run_selection_process(prompt_title, prompt_description, original_interaction):
-            class MultiSelect(Select):
-                def __init__(self):
-                    opts = [SelectOption(label=name) for name in property_names[:25]]
-                    super().__init__(placeholder="Escolha as propriedades...", min_values=1, max_values=len(opts), options=opts)
-
-                async def callback(self, inter: Interaction):
-                    self.view.result = self.values
-                    for item in self.view.children: item.disabled = True
-                    await inter.response.edit_message(content=f"Seleção para '{prompt_title}' confirmada!", view=self.view)
-                    self.view.stop()
-
-            view = SelectView(MultiSelect(), author_id=original_interaction.user.id, timeout=300.0)
-            await original_interaction.followup.send(embed=discord.Embed(title=prompt_title, description=prompt_description, color=Color.blue()), view=view, ephemeral=True)
-            await view.wait()
-            return getattr(view, 'result', None)
-
-        # Configurar propriedades de CRIAÇÃO
-        create_props = await run_selection_process("🛠️ Configurar Criação (`/card`)", "Selecione as propriedades que o bot deve perguntar ao criar um card.", interaction)
-        if create_props is None:
-            return await interaction.followup.send("⌛ Configuração cancelada. O processo não foi concluído.", ephemeral=True)
-        save_config(interaction.guild_id, config_channel_id, {'create_properties': create_props})
-        await interaction.followup.send(f"✅ Propriedades para **criação** salvas: `{', '.join(create_props)}`", ephemeral=True)
-
-        # Configurar propriedades de EXIBIÇÃO
-        display_props = await run_selection_process("🎨 Configurar Exibição (`/busca`)", "Selecione as propriedades que o bot deve mostrar nos resultados da busca e embeds.", interaction)
-        if display_props is None:
-            return await interaction.followup.send("⌛ Configuração cancelada. O processo não foi concluído.", ephemeral=True)
-        save_config(interaction.guild_id, config_channel_id, {'display_properties': display_props})
-
-        # Se for uma nova configuração, define valores padrão
-        if not is_update:
-            save_config(interaction.guild_id, config_channel_id, {
-                'action_buttons_enabled': True,
-                'topic_link_property_name': None,
-                'individual_person_prop': None,
-                'collective_person_prop': None
-            })
-
-        await interaction.followup.send(f"✅ Propriedades para **exibição** salvas: `{', '.join(display_props)}`", ephemeral=True)
-        await interaction.followup.send(f"🎉 **Configuração para o canal `#{config_channel.name}` concluída com sucesso!**", ephemeral=True)
-
-    except NotionAPIError as e:
-        await interaction.followup.send(f"❌ **Erro ao acessar o Notion:**\n`{e}`\n\nA configuração não pôde ser concluída. Verifique a URL e as permissões do Bot na sua integração do Notion.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"🔴 **Ocorreu um erro inesperado durante a configuração:**\n`{e}`", ephemeral=True)
-        print(f"Erro inesperado no /config flow: {e}")
-
 
 # --- EVENTOS DO BOT ---
 
 @bot.event
+async def on_ready():
+    await bot.wait_until_ready()
+    if DISCORD_GUILD_ID:
+        guild = discord.Object(id=DISCORD_GUILD_ID)
+        bot.tree.copy_global_to(guild=guild)
+        await bot.tree.sync(guild=guild)
+        print(f"Comandos sincronizados para o servidor {DISCORD_GUILD_ID}.")
+    else:
+        await bot.tree.sync()
+        print("Comandos sincronizados globalmente.")
+    print(f"✅ {bot.user} está online e pronto para uso!")
+    print(f"🚀 Servidor de webhook está a ouvir...")
+
+@bot.event
 async def on_notion_event(page_data: dict):
-    """
-    Este evento customizado é disparado pelo nosso handler do Flask quando um webhook chega.
-    """
     try:
         page_id = page_data.get('id')
-        if not page_id:
+        if not page_id: return
+
+        # Para descobrir a qual configuração este webhook pertence, teríamos que
+        # ter um identificador na URL. Para manter simples, vamos assumir que
+        # a configuração é a nível de servidor e vamos pegar a primeira que encontrarmos.
+        server_config = load_config(DISCORD_GUILD_ID)
+        if not server_config or 'channels' not in server_config: return
+
+        # Encontra a configuração do canal que tem as preferências de notificação
+        channel_config = next((c for c in server_config['channels'].values() if 'notification_preference' in c), None)
+        if not channel_config: return
+        
+        guild = bot.get_guild(int(DISCORD_GUILD_ID))
+        if not guild: return
+
+        preference = channel_config.get('notification_preference')
+        if preference == 'disabled':
+            print(f"Notificação para página {page_id} ignorada (desativado).")
             return
 
-        # Vamos procurar uma configuração global de canal para enviar a notificação.
-        # Isto é uma simplificação. O ideal seria ter esta config por servidor/canal.
-        # NOTA: Esta parte assume que a notificação deve ir para um canal específico.
-        #       Para enviar a um tópico ou DM, a lógica precisaria ser mais complexa.
-        
-        # Obter o canal para o qual enviar a notificação.
-        # Por simplicidade, vamos usar o primeiro canal configurado que encontrarmos.
-        # Idealmente, você adicionaria uma config específica para "canal_de_notificacoes".
-        
-        server_id = next(iter(load_config(None, None).keys()), None)
-        if not server_id: return
-        
-        configs = load_config(server_id, None)
-        channel_id = next(iter(configs.get('channels', {}).keys()), None)
-        if not channel_id: return
-        
-        target_channel = bot.get_channel(int(channel_id))
-        channel_config = load_config(server_id, channel_id)
+        page_result = {'id': page_id, 'url': page_data.get('url'), 'properties': page_data.get('properties', {})}
+        display_props = channel_config.get('display_properties', [])
+        embed = notion.format_page_for_embed(page_result, display_properties=display_props)
+        if not embed: return
 
-        if target_channel and channel_config:
-            display_props = channel_config.get('display_properties', [])
-            
-            # Criar um "page_result" simulado para a função de embed
-            page_result = {
-                'id': page_id,
-                'url': page_data.get('url'),
-                'properties': page_data.get('properties', {})
-            }
-            
-            embed = notion.format_page_for_embed(page_result, display_properties=display_props)
-            if embed:
+        # --- LÓGICA DE ROTEAMENTO BASEADA NA PREFERÊNCIA ---
+        if preference == 'topic':
+            topic_prop_name = channel_config.get('topic_link_property_name')
+            topic_url = notion.extract_value_from_property(page_result['properties'].get(topic_prop_name, {}), 'url')
+            if topic_url:
+                topic_id = int(topic_url.split('/')[-1])
+                target_topic = bot.get_channel(topic_id)
+                if isinstance(target_topic, discord.Thread):
+                    embed.title = f"🔔 Atualização no Tópico: {embed.title.replace('📌 ', '')}"
+                    await target_topic.send(embed=embed)
+                    return
+
+        elif preference == 'dm':
+            dm_prop_name = channel_config.get('dm_notification_prop')
+            user_name = notion.extract_value_from_property(page_result['properties'].get(dm_prop_name, {}), 'people')
+            if user_name:
+                target_user = discord.utils.get(guild.members, display_name=user_name)
+                if target_user:
+                    embed.title = f"🔔 Você recebeu uma atualização: {embed.title.replace('📌 ', '')}"
+                    await target_user.send(embed=embed)
+                    return
+
+        # Fallback para o canal configurado se 'topic' ou 'dm' falharem, ou se a preferência for 'channel'
+        target_channel_id = channel_config.get('notification_target_id')
+        if target_channel_id:
+            target_channel = bot.get_channel(int(target_channel_id))
+            if target_channel:
                 embed.title = f"🔔 Atualização do Notion: {embed.title.replace('📌 ', '')}"
-                embed.color = Color.orange()
                 await target_channel.send(embed=embed)
-        else:
-            print(f"Não foi possível encontrar um canal de destino para a notificação da página {page_id}")
 
     except Exception as e:
         print(f"Erro ao processar o evento do Notion: {e}")
@@ -359,19 +310,16 @@ async def num_cards(interaction: Interaction):
 
 # --- FUNÇÃO PARA INICIAR O SERVIDOR FLASK ---
 def run_flask():
-    # O Render define a variável de ambiente 'PORT'. Usamos 8080 como padrão se não for encontrada.
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
 
 # --- INICIAR O BOT ---
 if __name__ == "__main__":
-    # 1. Inicia o servidor Flask numa thread separada
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # 2. Inicia o bot do Discord
     if DISCORD_TOKEN:
         try:
             bot.run(DISCORD_TOKEN)
