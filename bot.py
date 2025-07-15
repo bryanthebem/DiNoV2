@@ -124,7 +124,113 @@ async def on_notion_event(page_data: dict):
     except Exception as e:
         print(f"Erro ao processar o evento do Notion: {e}")
 
+# Adicione esta classe e a função abaixo ao seu arquivo bot.py
+# antes da definição de @bot.tree.command(name="config", ...)
 
+class PropertySelectionView(discord.ui.View):
+    """Uma View para permitir que o admin selecione as propriedades de criação e exibição."""
+    def __init__(self, author_id: int, properties: list, notion_url: str, guild_id: int, channel_id: int, is_update: bool):
+        super().__init__(timeout=300.0)
+        self.author_id = author_id
+        self.notion_url = notion_url
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+        self.is_update = is_update
+        self.create_properties = []
+        self.display_properties = []
+
+        property_options = [discord.SelectOption(label=p['name'], description=f"Tipo: {p['type']}") for p in properties[:25]]
+
+        # Menu para selecionar propriedades de CRIAÇÃO
+        self.create_select = discord.ui.Select(
+            placeholder="Selecione as propriedades para CRIAR cards...",
+            min_values=1,
+            max_values=len(property_options),
+            options=property_options,
+            custom_id="create_select"
+        )
+        self.add_item(self.create_select)
+
+        # Menu para selecionar propriedades de EXIBIÇÃO/BUSCA
+        self.display_select = discord.ui.Select(
+            placeholder="Selecione as propriedades para EXIBIR/BUSCAR...",
+            min_values=1,
+            max_values=len(property_options),
+            options=property_options,
+            custom_id="display_select"
+        )
+        self.add_item(self.display_select)
+
+        # Botão para salvar
+        self.save_button = discord.ui.Button(label="Salvar Configuração", style=discord.ButtonStyle.green, row=2)
+        self.add_item(self.save_button)
+
+        # Callbacks
+        self.create_select.callback = self.select_callback
+        self.display_select.callback = self.select_callback
+        self.save_button.callback = self.save_callback
+
+    async def select_callback(self, interaction: discord.Interaction):
+        # Apenas confirma a interação para o Discord saber que foi recebida
+        await interaction.response.defer()
+        if interaction.data["custom_id"] == "create_select":
+            self.create_properties = interaction.data["values"]
+        elif interaction.data["custom_id"] == "display_select":
+            self.display_properties = interaction.data["values"]
+
+    async def save_callback(self, interaction: discord.Interaction):
+        if not self.create_properties or not self.display_properties:
+            await interaction.response.send_message("❌ Você precisa selecionar propriedades para ambas as listas.", ephemeral=True)
+            return
+
+        # Salva a configuração no arquivo JSON
+        new_config = {
+            "notion_url": self.notion_url,
+            "create_properties": self.create_properties,
+            "display_properties": self.display_properties
+        }
+        save_config(self.guild_id, self.channel_id, new_config)
+
+        status = "atualizada" if self.is_update else "concluída"
+        await interaction.response.edit_message(content=f"✅ Configuração {status} com sucesso! Você já pode usar os comandos `/card` e `/busca`.", view=None)
+        self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Você não pode interagir com o menu de outra pessoa.", ephemeral=True)
+            return False
+        return True
+
+
+async def run_full_config_flow(interaction: Interaction, url: str, is_update: bool):
+    """Inicia o fluxo de configuração completo, pedindo ao usuário para selecionar as propriedades."""
+    channel_id = interaction.channel.parent_id if isinstance(interaction.channel, discord.Thread) else interaction.channel.id
+    try:
+        properties = notion.get_properties_for_interaction(url)
+        if not properties:
+            await interaction.followup.send("❌ Não foi possível obter as propriedades da base de dados. Verifique a URL e as permissões do bot no Notion.", ephemeral=True)
+            return
+
+        view = PropertySelectionView(
+            author_id=interaction.user.id,
+            properties=properties,
+            notion_url=url,
+            guild_id=interaction.guild_id,
+            channel_id=channel_id,
+            is_update=is_update
+        )
+        message = (
+            "**Passo 1:** Selecione na primeira lista as propriedades que devem aparecer no formulário de criação (`/card`).\n"
+            "**Passo 2:** Selecione na segunda lista as propriedades que serão exibidas nos cards e usadas na busca (`/busca`).\n\n"
+            "*(Dica: você pode selecionar as mesmas propriedades para ambos)*"
+        )
+        await interaction.followup.send(message, view=view, ephemeral=True)
+
+    except NotionAPIError as e:
+        await interaction.followup.send(f"❌ Erro ao acessar o Notion: {e}", ephemeral=True)
+    except Exception as e:
+        print(f"Erro inesperado no fluxo de configuração: {e}")
+        await interaction.followup.send(f"🔴 Um erro inesperado ocorreu durante a configuração: {e}", ephemeral=True)
 
 # --- COMANDOS DE BARRA (/) ---
 
