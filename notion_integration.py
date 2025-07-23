@@ -1,4 +1,4 @@
-# notion_integration.py (Versão com correção da busca por 'people' e formatação de IA com parser Markdown)
+# notion_integration.py (Versão com correção na busca de multi-select)
 
 from notion_client import Client
 import os
@@ -61,8 +61,6 @@ class NotionIntegration:
         interpretando **negrito** e _itálico_.
         """
         rich_text_objects = []
-        # Expressão regular para encontrar negritos e itálicos
-        # Captura o texto entre ** ou _
         parts = re.split(r'(\*\*.*?\*\*|_.*?_)', text_content)
 
         for part in parts:
@@ -99,19 +97,16 @@ class NotionIntegration:
             if not line:
                 continue
 
-            # CORREÇÃO APLICADA: Trata cabeçalhos em negrito (ex: **Título:**)
             bold_heading_match = re.match(r'^\*\*(.*?):\*\*$', line.strip())
             if bold_heading_match:
                 heading_text = bold_heading_match.group(1) + ":"
-                # Usa um bloco de cabeçalho para semântica e robustez
                 notion_blocks.append({
                     "object": "block",
-                    "type": "heading_3", # Usar um heading é mais apropriado
+                    "type": "heading_3",
                     "heading_3": {
                         "rich_text": [{"type": "text", "text": {"content": heading_text}}]
                     }
                 })
-            # Trata itens de lista
             elif line.startswith('* ') or line.startswith('- '):
                 content_text = line[2:]
                 notion_blocks.append({
@@ -121,7 +116,6 @@ class NotionIntegration:
                         "rich_text": self._convert_text_to_notion_rich_text_objects(content_text)
                     }
                 })
-            # Trata parágrafos normais
             else:
                 notion_blocks.append({
                     "object": "block",
@@ -140,18 +134,28 @@ class NotionIntegration:
     def search_in_database(self, url, search_term, filter_property, property_type="rich_text"):
         database_id = self.extract_database_id(url)
         if not database_id: raise NotionAPIError("ID da base de dados não encontrado na URL.")
-        filter_criteria = {"property": filter_property}
+        
+        # *** CORREÇÃO APLICADA AQUI ***
+        # O objeto do filtro é construído dinamicamente
+        filter_criteria = {
+            "property": filter_property
+        }
 
         if property_type in ["rich_text", "title"]:
             filter_criteria[property_type] = {"contains": search_term}
         elif property_type in ["status", "select"]:
             filter_criteria[property_type] = {"equals": search_term}
+        elif property_type == "multi_select":
+            # A correção principal: multi_select usa 'contains' em vez de 'equals'
+            filter_criteria[property_type] = {"contains": search_term}
         elif property_type == "people":
             pessoa_id = self.search_id_person(search_term)
             if pessoa_id:
                 filter_criteria["people"] = {"contains": pessoa_id}
             else:
-                return {"results": []} # Se não encontrar a pessoa, retorna uma busca vazia para não dar erro
+                return {"results": []} 
+        # *** FIM DA CORREÇÃO ***
+        
         try:
             return self.notion.databases.query(database_id=database_id, filter=filter_criteria)
         except Exception as e:

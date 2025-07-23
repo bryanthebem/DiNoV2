@@ -277,6 +277,87 @@
                 "individual_person_prop": "Respons\u00e1vel",
                 "collective_person_prop": "Pessoa",
                 "ai_summary_enabled": true
+            },
+            "1394747107927261194": {
+                "notion_url": "https://www.notion.so/22e3bffc59298016ac1ad8d52245a24a?v=22e3bffc592980faa8ea000cb2a64734&source=copy_link",
+                "create_properties": [
+                    "Nome",
+                    "Pessoa",
+                    "Situa\u00e7\u00e3o",
+                    "Defini\u00e7\u00e3o",
+                    "Prioridade"
+                ],
+                "display_properties": [
+                    "Pessoa",
+                    "Nome",
+                    "Situa\u00e7\u00e3o",
+                    "Defini\u00e7\u00e3o",
+                    "Prioridade"
+                ],
+                "action_buttons_enabled": false,
+                "ai_summary_enabled": false,
+                "rename_topic_enabled": true,
+                "topic_link_property_name": "Link do topico",
+                "individual_person_prop": "Respons\u00e1vel",
+                "collective_person_prop": null,
+                "resolved_command_defaults": {
+                    "Situa\u00e7\u00e3o": "Conclu\u00eddo"
+                },
+                "capture_first_message_enabled": true,
+                "capture_first_message_for_commands": [
+                    "resolvido",
+                    "card"
+                ]
+            },
+            "1395859206565007360": {
+                "notion_url": "https://www.notion.so/22e3bffc59298016ac1ad8d52245a24a?v=22e3bffc592980faa8ea000cb2a64734",
+                "create_properties": [
+                    "Selecionar"
+                ],
+                "display_properties": [
+                    "Selecionar"
+                ],
+                "action_buttons_enabled": true,
+                "rename_topic_enabled": false,
+                "ai_summary_for_commands": [],
+                "capture_first_message_for_commands": [],
+                "topic_link_property_name": null,
+                "individual_person_prop": null,
+                "collective_person_prop": null,
+                "resolved_command_defaults": {}
+            },
+            "1396910643126468718": {
+                "notion_url": "https://www.notion.so/22e3bffc59298016ac1ad8d52245a24a?v=22e3bffc592980faa8ea000cb2a64734&source=copy_link",
+                "create_properties": [
+                    "Nome",
+                    "Pessoa",
+                    "Situa\u00e7\u00e3o",
+                    "Defini\u00e7\u00e3o",
+                    "Prioridade"
+                ],
+                "display_properties": [
+                    "Nome",
+                    "Pessoa",
+                    "Situa\u00e7\u00e3o",
+                    "Defini\u00e7\u00e3o",
+                    "Prioridade",
+                    "Data de Cria\u00e7\u00e3o"
+                ],
+                "action_buttons_enabled": false,
+                "rename_topic_enabled": true,
+                "ai_summary_for_commands": [
+                    "card"
+                ],
+                "capture_first_message_for_commands": [
+                    "resolvido",
+                    "card"
+                ],
+                "topic_link_property_name": "Link do topico",
+                "individual_person_prop": "Respons\u00e1vel",
+                "collective_person_prop": "Pessoa",
+                "resolved_command_defaults": {
+                    "Situa\u00e7\u00e3o": "Conclu\u00eddo"
+                }
             }
         }
     }

@@ -1,5 +1,4 @@
-# bot.py (Versão final com servidor Flask e roteamento inteligente)
-# bot.py (Versão final com servidor Flask e roteamento inteligente)
+# bot.py (Versão com correção no /card)
 
 import discord
 from discord import app_commands, Interaction, SelectOption, Color
@@ -8,49 +7,106 @@ from discord.ui import Select, View
 import os
 from dotenv import load_dotenv
 from typing import Optional
-import threading
-from flask import Flask, request, jsonify
 
 # Módulos locais
 from notion_integration import NotionIntegration, NotionAPIError
 from config_utils import save_config, load_config
-from ui_components import * # Importa tudo de ui_components
+from ui_components import (
+    SelectView,
+    PaginationView,
+    SearchModal,
+    CardModal,
+    ManagementView,
+    get_topic_participants,
+    PublishView,
+    _build_notion_page_content,
+    CardSelectPropertiesView, # Importa a view para uso direto
+)
 
-# Carregar variáveis de ambiente e inicializar
+# Carregar variáveis de ambiente e inicializar bot/notion
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
-# --- CONFIGURAÇÃO DO BOT E NOTION ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.messages = True
-intents.members = True # Necessário para encontrar membros por nome
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 notion = NotionIntegration()
 
-# --- CONFIGURAÇÃO DO SERVIDOR FLASK ---
-app = Flask(__name__)
 
-@app.route('/webhook/notion', methods=['POST'])
-def notion_webhook_handler():
-    secret_from_url = request.args.get('secret')
-    if not WEBHOOK_SECRET or not secret_from_url or secret_from_url != WEBHOOK_SECRET:
-        print("ALERTA: Tentativa de acesso ao webhook sem o segredo correto.")
-        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+# --- FUNÇÃO AUXILIAR DE CONFIGURAÇÃO ---
 
-    data = request.json
-    bot.loop.call_soon_threadsafe(bot.dispatch, 'notion_event', data)
-    return jsonify({"status": "success"}), 200
+async def run_full_config_flow(interaction: Interaction, url: str, is_update: bool = False):
+    """Executa o fluxo completo de configuração de um canal."""
+    config_channel = interaction.channel
+    if isinstance(interaction.channel, discord.Thread):
+        config_channel = interaction.channel.parent
+    config_channel_id = config_channel.id
+
+    try:
+        save_config(interaction.guild_id, config_channel_id, {'notion_url': url})
+
+        all_properties = notion.get_properties_for_interaction(url)
+        property_names = [prop['name'] for prop in all_properties]
+
+        async def run_selection_process(prompt_title, prompt_description, original_interaction):
+            class MultiSelect(Select):
+                def __init__(self):
+                    opts = [SelectOption(label=name) for name in property_names[:25]]
+                    super().__init__(placeholder="Escolha as propriedades...", min_values=1, max_values=len(opts), options=opts)
+
+                async def callback(self, inter: Interaction):
+                    self.view.result = self.values
+                    for item in self.view.children: item.disabled = True
+                    await inter.response.edit_message(content=f"Seleção para '{prompt_title}' confirmada!", view=self.view)
+                    self.view.stop()
+
+            view = SelectView(MultiSelect(), author_id=original_interaction.user.id, timeout=300.0)
+            await original_interaction.followup.send(embed=discord.Embed(title=prompt_title, description=prompt_description, color=Color.blue()), view=view, ephemeral=True)
+            await view.wait()
+            return getattr(view, 'result', None)
+
+        create_props = await run_selection_process("🛠️ Configurar Criação (`/card`)", "Selecione as propriedades que o bot deve perguntar ao criar um card.", interaction)
+        if create_props is None:
+            return await interaction.followup.send("⌛ Configuração cancelada. O processo não foi concluído.", ephemeral=True)
+        save_config(interaction.guild_id, config_channel_id, {'create_properties': create_props})
+        await interaction.followup.send(f"✅ Propriedades para **criação** salvas: `{', '.join(create_props)}`", ephemeral=True)
+
+        display_props = await run_selection_process("🎨 Configurar Exibição (`/busca`)", "Selecione as propriedades que o bot deve mostrar nos resultados da busca e embeds.", interaction)
+        if display_props is None:
+            return await interaction.followup.send("⌛ Configuração cancelada. O processo não foi concluído.", ephemeral=True)
+        save_config(interaction.guild_id, config_channel_id, {'display_properties': display_props})
+
+        if not is_update:
+            save_config(interaction.guild_id, config_channel_id, {
+                'action_buttons_enabled': True,
+                'rename_topic_enabled': False,
+                'ai_summary_for_commands': [],
+                'capture_first_message_for_commands': [],
+                'topic_link_property_name': None,
+                'individual_person_prop': None,
+                'collective_person_prop': None,
+                'resolved_command_defaults': {}
+            })
+
+        await interaction.followup.send(f"✅ Propriedades para **exibição** salvas: `{', '.join(display_props)}`", ephemeral=True)
+        await interaction.followup.send(f"🎉 **Configuração para o canal `#{config_channel.name}` concluída com sucesso!**", ephemeral=True)
+
+    except NotionAPIError as e:
+        await interaction.followup.send(f"❌ **Erro ao acessar o Notion:**\n`{e}`\n\nA configuração não pôde ser concluída. Verifique a URL e as permissões do Bot na sua integração do Notion.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"🔴 **Ocorreu um erro inesperado durante a configuração:**\n`{e}`", ephemeral=True)
+        print(f"Erro inesperado no /config flow: {e}")
+
 
 # --- EVENTOS DO BOT ---
 
 @bot.event
 async def on_ready():
-    await bot.wait_until_ready()
+    """Evento disparado quando o bot está pronto."""
     if DISCORD_GUILD_ID:
         guild = discord.Object(id=DISCORD_GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
@@ -60,70 +116,6 @@ async def on_ready():
         await bot.tree.sync()
         print("Comandos sincronizados globalmente.")
     print(f"✅ {bot.user} está online e pronto para uso!")
-    print(f"🚀 Servidor de webhook está a ouvir...")
-
-@bot.event
-async def on_notion_event(page_data: dict):
-    try:
-        page_id = page_data.get('id')
-        if not page_id: return
-
-        # Para descobrir a qual configuração este webhook pertence, teríamos que
-        # ter um identificador na URL. Para manter simples, vamos assumir que
-        # a configuração é a nível de servidor e vamos pegar a primeira que encontrarmos.
-        server_config = load_config(DISCORD_GUILD_ID)
-        if not server_config or 'channels' not in server_config: return
-
-        # Encontra a configuração do canal que tem as preferências de notificação
-        channel_config = next((c for c in server_config['channels'].values() if 'notification_preference' in c), None)
-        if not channel_config: return
-        
-        guild = bot.get_guild(int(DISCORD_GUILD_ID))
-        if not guild: return
-
-        preference = channel_config.get('notification_preference')
-        if preference == 'disabled':
-            print(f"Notificação para página {page_id} ignorada (desativado).")
-            return
-
-        page_result = {'id': page_id, 'url': page_data.get('url'), 'properties': page_data.get('properties', {})}
-        display_props = channel_config.get('display_properties', [])
-        embed = notion.format_page_for_embed(page_result, display_properties=display_props)
-        if not embed: return
-
-        # --- LÓGICA DE ROTEAMENTO BASEADA NA PREFERÊNCIA ---
-        if preference == 'topic':
-            topic_prop_name = channel_config.get('topic_link_property_name')
-            topic_url = notion.extract_value_from_property(page_result['properties'].get(topic_prop_name, {}), 'url')
-            if topic_url:
-                topic_id = int(topic_url.split('/')[-1])
-                target_topic = bot.get_channel(topic_id)
-                if isinstance(target_topic, discord.Thread):
-                    embed.title = f"🔔 Atualização no Tópico: {embed.title.replace('📌 ', '')}"
-                    await target_topic.send(embed=embed)
-                    return
-
-        elif preference == 'dm':
-            dm_prop_name = channel_config.get('dm_notification_prop')
-            user_name = notion.extract_value_from_property(page_result['properties'].get(dm_prop_name, {}), 'people')
-            if user_name:
-                target_user = discord.utils.get(guild.members, display_name=user_name)
-                if target_user:
-                    embed.title = f"🔔 Você recebeu uma atualização: {embed.title.replace('📌 ', '')}"
-                    await target_user.send(embed=embed)
-                    return
-
-        # Fallback para o canal configurado se 'topic' ou 'dm' falharem, ou se a preferência for 'channel'
-        target_channel_id = channel_config.get('notification_target_id')
-        if target_channel_id:
-            target_channel = bot.get_channel(int(target_channel_id))
-            if target_channel:
-                embed.title = f"🔔 Atualização do Notion: {embed.title.replace('📌 ', '')}"
-                await target_channel.send(embed=embed)
-
-    except Exception as e:
-        print(f"Erro ao processar o evento do Notion: {e}")
-
 
 
 # --- COMANDOS DE BARRA (/) ---
@@ -181,7 +173,6 @@ async def interactive_card(interaction: Interaction):
 
         create_properties_names = config.get('create_properties', []).copy()
 
-        # Remove propriedades que são preenchidas automaticamente
         props_to_remove = [
             config.get('topic_link_property_name'),
             config.get('individual_person_prop'),
@@ -200,6 +191,27 @@ async def interactive_card(interaction: Interaction):
         if len(text_props) > 5: return await interaction.response.send_message(f"❌ Formulário com muitos campos de texto ({len(text_props)}). O máximo é 5.", ephemeral=True)
         if len(select_props) > 4: return await interaction.response.send_message(f"❌ Formulário com muitos menus de seleção ({len(select_props)}). O máximo é 4.", ephemeral=True)
 
+        # *** CORREÇÃO APLICADA AQUI ***
+        # Se não houver nenhuma propriedade para preencher, avisa o usuário.
+        if not text_props and not select_props:
+             return await interaction.response.send_message("❌ Nenhuma propriedade configurada para este comando. Use `/config` para adicionar propriedades de criação.", ephemeral=True)
+
+        # Se houver apenas propriedades de seleção, pula o modal e vai direto para a View.
+        if not text_props:
+            view = CardSelectPropertiesView(
+                author_id=interaction.user.id,
+                config=config,
+                all_properties=all_properties,
+                select_props=select_props,
+                collected_from_modal={}, # Inicia com dados vazios
+                thread_context=thread_context,
+                notion=notion
+            )
+            await interaction.response.send_message("📝 Por favor, preencha as opções abaixo para criar o card.", view=view, ephemeral=True)
+            return
+        # *** FIM DA CORREÇÃO ***
+
+        # Se houver propriedades de texto, mostra o modal como antes.
         modal = CardModal(
             notion=notion,
             config=config,
@@ -307,19 +319,75 @@ async def num_cards(interaction: Interaction):
         await interaction.response.send_message(f"🔴 Erro inesperado: {e}", ephemeral=True)
         print(f"Erro inesperado no /num_cards: {e}")
 
+@bot.tree.command(name="resolvido", description="Cria um card com valores padrão e marca o tópico como resolvido.")
+async def resolved_command(interaction: Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
 
-# --- FUNÇÃO PARA INICIAR O SERVIDOR FLASK ---
-def run_flask():
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    if not isinstance(interaction.channel, discord.Thread):
+        return await interaction.followup.send("❌ Este comando só pode ser usado dentro de um tópico.", ephemeral=True)
 
+    config_channel_id = interaction.channel.parent.id
+    config = load_config(interaction.guild_id, config_channel_id)
+
+    if not config or 'notion_url' not in config:
+        return await interaction.followup.send("❌ O Notion ainda não foi configurado para este canal. Use `/config`.", ephemeral=True)
+
+    if interaction.channel.archived:
+        return await interaction.followup.send("❌ Este tópico já está arquivado/fechado.", ephemeral=True)
+
+    try:
+        thread_context = interaction.channel
+        properties_to_set = config.get('resolved_command_defaults', {}).copy()
+
+        individual_prop = config.get('individual_person_prop')
+        if individual_prop:
+            properties_to_set[individual_prop] = interaction.user.display_name
+
+        collective_prop = config.get('collective_person_prop')
+        if collective_prop and thread_context:
+            participants = await get_topic_participants(thread_context)
+            notion_user_ids = [notion.search_id_person(member.display_name) for member in participants]
+            properties_to_set[collective_prop] = [uid for uid in notion_user_ids if uid]
+
+        topic_prop_name = config.get('topic_link_property_name')
+        if topic_prop_name and thread_context:
+            properties_to_set[topic_prop_name] = thread_context.jump_url
+
+        title_value = thread_context.name.replace("[Card]", "").strip()
+        
+        page_content = await _build_notion_page_content(config, thread_context, notion, command_name="resolvido")
+
+        page_properties = notion.build_page_properties(config['notion_url'], title_value, properties_to_set)
+        
+        response = notion.insert_into_database(
+            config['notion_url'],
+            page_properties,
+            children=page_content
+        )
+
+        new_name = f"[Resolvido] {title_value}"
+        if len(new_name) > 100: new_name = new_name[:97] + "..."
+        await thread_context.edit(name=new_name, archived=True)
+
+        success_embed = notion.format_page_for_embed(response, display_properties=config.get('display_properties', []))
+        if success_embed:
+            success_embed.title = f"✅ Tópico Resolvido e Card Criado!"
+            
+            publish_view = PublishView(interaction.user.id, success_embed, response['id'], config, notion)
+            await interaction.followup.send("Use o botão abaixo para exibir o card para todos no tópico.", embed=success_embed, view=publish_view, ephemeral=True)
+        else:
+            await interaction.followup.send("✅ Tópico marcado como resolvido e card criado no Notion!", ephemeral=True)
+        
+    except NotionAPIError as e:
+        await interaction.followup.send(f"❌ **Erro no Notion:**\n`{e}`", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ **Erro de Permissão:** Não tenho permissão para editar ou arquivar este tópico. Verifique minhas permissões no servidor.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"🔴 **Erro inesperado:**\n`{e}`", ephemeral=True)
+        print(f"Erro inesperado no /resolvido: {e}")
 
 # --- INICIAR O BOT ---
 if __name__ == "__main__":
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-
     if DISCORD_TOKEN:
         try:
             bot.run(DISCORD_TOKEN)
